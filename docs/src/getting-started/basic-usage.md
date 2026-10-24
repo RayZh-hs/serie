@@ -16,3 +16,8 @@ Use Up/Down or `j`/`k` to select, Page Up/Down to scroll, Enter to apply, and Es
 to cancel. The filter is preserved by refresh (`R`). Auto rechecks HEAD on refresh;
 without a checkout it shows all branches. If a named branch is deleted, refresh
 falls back to All. Filtering only changes the displayed history.
+
+The graph highlights the selected commit's first-parent lineage and dims other
+connections, including merge-side lines. Commit circles retain their colors.
+Wide Sixel graphs automatically center on the selected circle when selection
+changes; `h`/`l` and Left/Right also let you pan manually.

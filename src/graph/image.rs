@@ -42,11 +42,7 @@ struct GraphViewport {
 
 impl GraphViewport {
     fn follow(&mut self, column: usize, node_width: usize, total_width: usize) {
-        if column < self.offset {
-            self.offset = column;
-        } else if column + node_width > self.offset + self.width {
-            self.offset = (column + node_width).saturating_sub(self.width);
-        }
+        self.offset = column.saturating_sub(self.width.saturating_sub(node_width) / 2);
         self.offset = self.offset.min(total_width.saturating_sub(self.width));
     }
 }
@@ -68,6 +64,7 @@ pub struct GraphImageManager<'a> {
     sixel_cell_size: Option<(u16, u16)>,
     viewport: Option<GraphViewport>,
     focused_commit: Option<CommitHash>,
+    lineage: FxHashSet<usize>,
 }
 
 impl<'a> GraphImageManager<'a> {
@@ -98,6 +95,7 @@ impl<'a> GraphImageManager<'a> {
             sixel_cell_size: None,
             viewport: None,
             focused_commit: None,
+            lineage: FxHashSet::default(),
         }
     }
 
@@ -145,6 +143,20 @@ impl<'a> GraphImageManager<'a> {
             return;
         }
         self.focused_commit = Some(hash.clone());
+        self.lineage.clear();
+        let mut current = self.graph.commit_pos_map.get(hash).map(|&(_, row)| row);
+        while let Some(row) = current {
+            if !self.lineage.insert(row) {
+                break;
+            }
+            current = self.graph.commits[row]
+                .parent_commit_hashes
+                .first()
+                .and_then(|parent| self.graph.commit_pos_map.get(parent))
+                .map(|&(_, row)| row);
+        }
+        // Selection changes the brightness of connections throughout the graph.
+        self.prepared_image_map.clear();
         let Some(mut viewport) = self.viewport else {
             return;
         };
@@ -210,13 +222,14 @@ impl<'a> GraphImageManager<'a> {
             return;
         }
         let image_id = graph_image_id(self.session_nonce, commit_hash);
-        let graph_row_image = build_single_graph_row_image(
+        let graph_row_image = build_graph_row_image(
             self.graph,
             &self.image_params,
             &mut self.drawing_pixels,
             self.graph_style,
             self.image_width_mode,
             commit_hash,
+            self.focused_commit.as_ref().map(|_| &self.lineage),
         );
         let mut image = graph_row_image.prepare(
             self.cell_width_type,
@@ -344,6 +357,18 @@ impl ImageParams {
         self.edge_colors[index % self.edge_colors.len()]
     }
 
+    fn line_color(&self, edge: &Edge) -> image::Rgba<u8> {
+        let mut color = self.edge_color(edge.associated_line_pos_x);
+        if edge.dimmed {
+            for channel in 0..3 {
+                color[channel] = ((3 * u16::from(color[channel])
+                    + 2 * u16::from(self.background_color[channel]))
+                    / 5) as u8;
+            }
+        }
+        color
+    }
+
     fn corner_radius(&self) -> u16 {
         if self.width < self.height {
             self.width / 2
@@ -353,6 +378,7 @@ impl ImageParams {
     }
 }
 
+#[cfg(test)]
 pub fn build_single_graph_row_image(
     graph: &Graph<'_>,
     image_params: &ImageParams,
@@ -361,8 +387,39 @@ pub fn build_single_graph_row_image(
     image_width_mode: GraphImageWidthMode,
     commit_hash: &CommitHash,
 ) -> GraphRowImage {
+    build_graph_row_image(
+        graph,
+        image_params,
+        drawing_pixels,
+        graph_style,
+        image_width_mode,
+        commit_hash,
+        None,
+    )
+}
+
+fn build_graph_row_image(
+    graph: &Graph<'_>,
+    image_params: &ImageParams,
+    drawing_pixels: &mut DrawingPixels,
+    graph_style: GraphStyle,
+    image_width_mode: GraphImageWidthMode,
+    commit_hash: &CommitHash,
+    lineage: Option<&FxHashSet<usize>>,
+) -> GraphRowImage {
     let (pos_x, pos_y) = graph.commit_pos_map[&commit_hash];
-    let edges = &graph.edges[pos_y];
+    let mut edges = graph.edges[pos_y].clone();
+    if let Some(lineage) = lineage {
+        let bright: FxHashSet<_> = graph.first_parent_edges[pos_y]
+            .iter()
+            .filter(|(_, child)| lineage.contains(child))
+            .map(|(edge, _)| *edge)
+            .collect();
+        for edge in &mut edges {
+            edge.dimmed = !bright.contains(edge);
+        }
+        edges.sort_by_key(|edge| !edge.dimmed);
+    }
 
     let max_pos_x = match image_width_mode {
         GraphImageWidthMode::Compact => edges.iter().map(|e| e.pos_x).fold(pos_x, usize::max),
@@ -374,7 +431,7 @@ pub fn build_single_graph_row_image(
     calc_graph_row_image(
         pos_x,
         cell_count,
-        edges,
+        &edges,
         image_params,
         drawing_pixels,
         graph_style,
@@ -931,7 +988,7 @@ fn draw_edge(
     };
 
     let x_offset = (edge.pos_x * image_params.width as usize) as i32;
-    let color = image_params.edge_color(edge.associated_line_pos_x);
+    let color = image_params.line_color(edge);
 
     for (x, y) in pixels {
         let x = (*x + x_offset) as u32;
@@ -960,7 +1017,7 @@ fn draw_diagonal_connected_edge(
         let Some(side) = edges.iter().find(|e| e.edge_type == side_type) else {
             continue;
         };
-        let color = image_params.edge_color(side.associated_line_pos_x);
+        let color = image_params.line_color(corner);
         let x_offset = (side.pos_x.min(corner.pos_x) * image_params.width as usize) as i32;
         let pixels = drawing_pixels.diagonal_connection_pixels(side, corner, image_params);
         draw_connection_pixels(img_buf, pixels, x_offset, color);
@@ -1083,7 +1140,7 @@ fn draw_curved_connected_edge(
             continue;
         };
 
-        let color = image_params.edge_color(corner.associated_line_pos_x);
+        let color = image_params.line_color(corner);
         let x_offset = (side.pos_x.min(corner.pos_x) * image_params.width as usize) as i32;
         let pixels = drawing_pixels.curved_connection_pixels(side, corner, image_params);
         draw_connection_pixels(img_buf, pixels, x_offset, color);
@@ -1243,7 +1300,7 @@ mod tests {
         viewport.follow(0, 1, 254);
         assert_eq!(viewport.offset, 0);
         viewport.follow(100, 2, 508);
-        assert_eq!(viewport.offset, 38);
+        assert_eq!(viewport.offset, 69);
         assert!(100 >= viewport.offset && 102 <= viewport.offset + viewport.width);
     }
 
@@ -1253,6 +1310,7 @@ mod tests {
             commits: Vec::new(),
             commit_pos_map: FxHashMap::default(),
             edges: Vec::new(),
+            first_parent_edges: Vec::new(),
             max_pos_x: 253,
             warning: None,
         };
@@ -1273,6 +1331,143 @@ mod tests {
         manager.set_viewport_width(300);
         assert_eq!(manager.display_cell_width(), 254);
         assert_eq!(manager.pan(true, 1), None);
+    }
+
+    #[rstest]
+    fn selected_lineage_uses_commit_relationships_and_updates_cached_rows(
+        #[values(GraphStyle::Rounded, GraphStyle::Angular, GraphStyle::Curved)] style: GraphStyle,
+        #[values(false, true)] antialias: bool,
+    ) {
+        use crate::{
+            git::{Repository, SortCommit},
+            test_support::git::GitRepository,
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let git = GitRepository::new(dir.path());
+        git.init();
+        git.commit("root", "2025-01-01");
+        git.checkout_b("topic");
+        git.commit("topic old", "2025-01-02");
+        git.commit("topic tip", "2025-01-03");
+        git.checkout("master");
+        git.commit("main", "2025-01-04");
+        git.merge(&["topic"], "2025-01-05");
+        git.commit("tip", "2025-01-06");
+        let repo = Repository::load(dir.path(), SortCommit::Topological, None, false).unwrap();
+        let graph = crate::graph::calc_graph(&repo, None);
+        let hash = |subject| {
+            graph
+                .commits
+                .iter()
+                .find(|c| c.subject == subject)
+                .unwrap()
+                .commit_hash
+                .clone()
+        };
+        let colors = GraphColorSet::new(&GraphColorConfig::default());
+        let mut manager = GraphImageManager::new(
+            &graph,
+            &colors,
+            CellWidthType::Double,
+            style,
+            antialias,
+            GraphImageWidthMode::Fixed,
+            ImageProtocol::Iterm2,
+        );
+        manager.follow_commit(&hash("tip"));
+        assert_eq!(manager.lineage.len(), 4); // tip, merge, main, root
+        assert!(!manager
+            .lineage
+            .contains(&graph.commit_pos_map[&hash("topic tip")].1));
+        let main = hash("main");
+        manager.ensure_uploaded(&main);
+        let before = manager.prepared_image(&main).cells()[0]
+            .symbol()
+            .to_string();
+        manager.follow_commit(&hash("topic tip"));
+        assert_eq!(manager.lineage.len(), 3); // topic tip, topic old, root
+        assert!(manager.prepared_image_map.is_empty());
+        manager.ensure_uploaded(&main);
+        assert_ne!(before, manager.prepared_image(&main).cells()[0].symbol());
+        manager.follow_commit(&hash("tip"));
+
+        let params = &manager.image_params;
+        let mut preview = image::RgbaImage::new(
+            (graph.max_pos_x as u32 + 1) * u32::from(params.width),
+            graph.commits.len() as u32 * u32::from(params.height),
+        );
+        let mut changed = false;
+        for (row, commit) in graph.commits.iter().enumerate() {
+            let focused = build_graph_row_image(
+                &graph,
+                params,
+                &mut manager.drawing_pixels,
+                style,
+                GraphImageWidthMode::Fixed,
+                &commit.commit_hash,
+                Some(&manager.lineage),
+            );
+            let normal = build_single_graph_row_image(
+                &graph,
+                params,
+                &mut manager.drawing_pixels,
+                style,
+                GraphImageWidthMode::Fixed,
+                &commit.commit_hash,
+            );
+            let focused = image::load_from_memory(&focused.bytes).unwrap().to_rgba8();
+            let normal = image::load_from_memory(&normal.bytes).unwrap().to_rgba8();
+            changed |= focused != normal;
+            let x = graph.commit_pos_map[&commit.commit_hash].0 as u32 * u32::from(params.width)
+                + u32::from(params.width / 2);
+            assert_eq!(
+                focused.get_pixel(x, u32::from(params.height / 2)),
+                normal.get_pixel(x, u32::from(params.height / 2))
+            ); // circles stay bright
+            for edge in graph.edges[row]
+                .iter()
+                .filter(|edge| edge.edge_type == EdgeType::Vertical)
+            {
+                let bright = graph.first_parent_edges[row]
+                    .iter()
+                    .any(|(candidate, child)| candidate == edge && manager.lineage.contains(child));
+                let mut expected = *edge;
+                expected.dimmed = !bright;
+                let x = edge.pos_x as u32 * u32::from(params.width) + u32::from(params.width / 2);
+                assert_eq!(*focused.get_pixel(x, 0), params.line_color(&expected));
+            }
+            image::imageops::replace(
+                &mut preview,
+                &focused,
+                0,
+                row as i64 * i64::from(params.height),
+            );
+        }
+        assert!(changed);
+        std::fs::create_dir_all(OUTPUT_DIR).unwrap();
+        preview
+            .save(format!("{OUTPUT_DIR}/lineage_{style:?}_{antialias}.png"))
+            .unwrap();
+    }
+
+    #[test]
+    fn selected_lineage_keeps_truncated_parent_continuations_bright() {
+        use crate::{
+            git::{Repository, SortCommit},
+            test_support::git::GitRepository,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let git = GitRepository::new(dir.path());
+        git.init();
+        git.commit("root", "2025-01-01");
+        git.commit("tip", "2025-01-02");
+        let repo = Repository::load(dir.path(), SortCommit::Topological, Some(1), false).unwrap();
+        let graph = crate::graph::calc_graph(&repo, None);
+        assert_eq!(graph.commits.len(), 1);
+        assert!(graph.first_parent_edges[0]
+            .iter()
+            .any(|(edge, child)| edge.edge_type == EdgeType::Down && *child == 0));
     }
 
     #[rstest]

@@ -157,13 +157,13 @@ pub fn render(
         image.paint(&masks.circle_edge, offset, params.circle_edge_color);
     }
     let mut ordered_edges: Vec<_> = edges.iter().collect();
-    ordered_edges.sort_by_key(|e| (e.associated_line_pos_x, e.pos_x, e.edge_type));
+    ordered_edges.sort_by_key(|e| (!e.dimmed, e.associated_line_pos_x, e.pos_x, e.edge_type));
     for edge in &ordered_edges {
         if style != GraphStyle::Rounded && !edge.edge_type.is_vertically_related() {
             continue;
         }
         let offset = (edge.pos_x * params.width as usize) as i32;
-        let color = params.edge_color(edge.associated_line_pos_x);
+        let color = params.line_color(edge);
         match edge.edge_type {
             EdgeType::RightTop => image.paint(&masks.corners[0], offset, color),
             EdgeType::LeftTop => image.paint(&masks.corners[1], offset, color),
@@ -198,11 +198,7 @@ pub fn render(
             };
             let offset = (side.pos_x.min(corner.pos_x) * params.width as usize) as i32;
             let coverage = masks.connection_coverage(side, corner, params, style);
-            image.paint(
-                coverage,
-                offset,
-                params.edge_color(corner.associated_line_pos_x),
-            );
+            image.paint(coverage, offset, params.line_color(corner));
         }
     }
     image.resolve()

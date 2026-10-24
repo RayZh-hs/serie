@@ -107,6 +107,8 @@ impl<'a> RefsView<'a> {
         let [list_area, _] = self.split_areas(area);
         self.as_mut_list_state()
             .update_height(list_area.height as usize);
+        self.as_mut_list_state()
+            .update_graph_viewport(list_area.width);
     }
 
     pub fn prepare_graph_uploads(&mut self) {
