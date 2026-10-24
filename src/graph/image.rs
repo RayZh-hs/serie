@@ -3,6 +3,7 @@ use std::{
     hash::{Hash, Hasher},
     io::Cursor,
     process,
+    rc::Rc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -34,11 +35,30 @@ pub enum GraphImageWidthMode {
     Fixed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct GraphViewport {
     offset: usize,
     width: usize,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RowCacheKey {
+    // Inline protocols can share identical row geometry across commits.
+    // Kitty Unicode uploads use an image ID belonging to one commit.
+    commit_hash: Option<CommitHash>,
+    circle_pos_x: usize,
+    viewport: Option<GraphViewport>,
+    edges: Vec<Edge>,
+}
+
+#[derive(Debug)]
+struct CachedRow {
+    image: Rc<PreparedImage>,
+    upload_data: Option<String>,
+    last_used: u64,
+}
+
+const ROW_CACHE_CAPACITY: usize = 512;
 
 impl GraphViewport {
     fn follow(&mut self, column: usize, node_width: usize, total_width: usize) {
@@ -49,7 +69,9 @@ impl GraphViewport {
 
 #[derive(Debug)]
 pub struct GraphImageManager<'a> {
-    prepared_image_map: FxHashMap<CommitHash, PreparedImage>,
+    prepared_image_map: FxHashMap<CommitHash, Rc<PreparedImage>>,
+    row_cache: FxHashMap<RowCacheKey, CachedRow>,
+    cache_clock: u64,
     image_ids: FxHashSet<u32>,
     pending_uploads: Vec<String>,
 
@@ -82,6 +104,8 @@ impl<'a> GraphImageManager<'a> {
 
         GraphImageManager {
             prepared_image_map: FxHashMap::default(),
+            row_cache: FxHashMap::default(),
+            cache_clock: 0,
             image_ids: FxHashSet::default(),
             pending_uploads: Vec::default(),
             graph,
@@ -155,7 +179,7 @@ impl<'a> GraphImageManager<'a> {
                 .and_then(|parent| self.graph.commit_pos_map.get(parent))
                 .map(|&(_, row)| row);
         }
-        // Selection changes the brightness of connections throughout the graph.
+        // Recheck appearances on selection, retaining encoded rows in the cache.
         self.prepared_image_map.clear();
         let Some(mut viewport) = self.viewport else {
             return;
@@ -208,39 +232,110 @@ impl<'a> GraphImageManager<'a> {
         std::mem::take(&mut self.pending_uploads)
     }
 
-    pub fn ensure_uploaded(&mut self, commit_hash: &CommitHash) {
+    pub fn begin_frame(&mut self) {
         if matches!(self.image_protocol, ImageProtocol::Sixel) {
             let size = crate::protocol::sixel_cell_size()
                 .expect("terminal stopped reporting its pixel dimensions");
             if self.sixel_cell_size != Some(size) {
                 self.prepared_image_map.clear();
+                self.row_cache.clear();
                 self.image_ids.clear();
                 self.sixel_cell_size = Some(size);
             }
         }
+    }
+
+    pub fn ensure_uploaded(&mut self, commit_hash: &CommitHash) {
+        if matches!(self.image_protocol, ImageProtocol::Sixel) && self.sixel_cell_size.is_none() {
+            self.begin_frame();
+        }
         if self.prepared_image_map.contains_key(commit_hash) {
             return;
         }
+        let (circle_pos_x, row) = self.graph.commit_pos_map[commit_hash];
+        let edges = focused_row_edges(
+            self.graph,
+            row,
+            self.focused_commit.as_ref().map(|_| &self.lineage),
+        );
+        let cache_key = RowCacheKey {
+            commit_hash: matches!(self.image_protocol, ImageProtocol::KittyUnicode { .. })
+                .then(|| commit_hash.clone()),
+            circle_pos_x,
+            viewport: self.viewport,
+            edges,
+        };
+        self.cache_clock += 1;
+        if let Some(cached) = self.row_cache.get_mut(&cache_key) {
+            cached.last_used = self.cache_clock;
+            // Kitty Unicode uses separate uploads; restore the cached pixels
+            // when another appearance has replaced this commit's image ID.
+            if let Some(upload_data) = &cached.upload_data {
+                self.pending_uploads.push(upload_data.clone());
+            }
+            self.prepared_image_map
+                .insert(commit_hash.clone(), Rc::clone(&cached.image));
+            return;
+        }
         let image_id = graph_image_id(self.session_nonce, commit_hash);
-        let graph_row_image = build_graph_row_image(
+        let (pixels, cell_count) = build_graph_row_pixels(
             self.graph,
             &self.image_params,
             &mut self.drawing_pixels,
             self.graph_style,
             self.image_width_mode,
             commit_hash,
-            self.focused_commit.as_ref().map(|_| &self.lineage),
+            &cache_key.edges,
         );
-        let mut image = graph_row_image.prepare(
-            self.cell_width_type,
-            self.image_protocol,
-            image_id,
-            self.display_cell_width() as usize,
-            self.viewport.map_or(0, |viewport| viewport.offset),
-        );
-        if let Some(upload_data) = image.take_upload_data() {
-            self.pending_uploads.push(upload_data);
+        let mut image = if let Some(cell_size) = self.sixel_cell_size {
+            let columns = cell_count
+                * match self.cell_width_type {
+                    CellWidthType::Single => 1,
+                    CellWidthType::Double => 2,
+                };
+            crate::protocol::prepare_sixel_image(
+                &pixels,
+                columns,
+                self.display_cell_width() as usize,
+                self.viewport.map_or(0, |viewport| viewport.offset),
+                cell_size,
+            )
+        } else {
+            GraphRowImage {
+                bytes: build_image(&pixels, pixels.width(), pixels.height()),
+                cell_count,
+            }
+            .prepare(
+                self.cell_width_type,
+                self.image_protocol,
+                image_id,
+                self.display_cell_width() as usize,
+                0,
+            )
+        };
+        let upload_data = image.take_upload_data();
+        if let Some(upload_data) = &upload_data {
+            self.pending_uploads.push(upload_data.clone());
         }
+        let image = Rc::new(image);
+        if self.row_cache.len() >= ROW_CACHE_CAPACITY {
+            if let Some(oldest) = self
+                .row_cache
+                .iter()
+                .min_by_key(|(_, cached)| cached.last_used)
+                .map(|(key, _)| key.clone())
+            {
+                self.row_cache.remove(&oldest);
+            }
+        }
+        self.row_cache.insert(
+            cache_key,
+            CachedRow {
+                image: Rc::clone(&image),
+                upload_data,
+                last_used: self.cache_clock,
+            },
+        );
         self.prepared_image_map.insert(commit_hash.clone(), image);
         self.image_ids.insert(image_id);
     }
@@ -398,6 +493,7 @@ pub fn build_single_graph_row_image(
     )
 }
 
+#[cfg(test)]
 fn build_graph_row_image(
     graph: &Graph<'_>,
     image_params: &ImageParams,
@@ -407,10 +503,31 @@ fn build_graph_row_image(
     commit_hash: &CommitHash,
     lineage: Option<&FxHashSet<usize>>,
 ) -> GraphRowImage {
-    let (pos_x, pos_y) = graph.commit_pos_map[&commit_hash];
-    let mut edges = graph.edges[pos_y].clone();
+    let (_, row) = graph.commit_pos_map[commit_hash];
+    let edges = focused_row_edges(graph, row, lineage);
+    let (image, cell_count) = build_graph_row_pixels(
+        graph,
+        image_params,
+        drawing_pixels,
+        graph_style,
+        image_width_mode,
+        commit_hash,
+        &edges,
+    );
+    GraphRowImage {
+        bytes: build_image(&image, image.width(), image.height()),
+        cell_count,
+    }
+}
+
+fn focused_row_edges(
+    graph: &Graph<'_>,
+    row: usize,
+    lineage: Option<&FxHashSet<usize>>,
+) -> Vec<Edge> {
+    let mut edges = graph.edges[row].clone();
     if let Some(lineage) = lineage {
-        let bright: FxHashSet<_> = graph.first_parent_edges[pos_y]
+        let bright: FxHashSet<_> = graph.first_parent_edges[row]
             .iter()
             .filter(|(_, child)| lineage.contains(child))
             .map(|(edge, _)| *edge)
@@ -421,6 +538,20 @@ fn build_graph_row_image(
         edges.sort_by_key(|edge| !edge.dimmed);
     }
 
+    edges
+}
+
+fn build_graph_row_pixels(
+    graph: &Graph<'_>,
+    image_params: &ImageParams,
+    drawing_pixels: &mut DrawingPixels,
+    graph_style: GraphStyle,
+    image_width_mode: GraphImageWidthMode,
+    commit_hash: &CommitHash,
+    edges: &[Edge],
+) -> (image::RgbaImage, usize) {
+    let (pos_x, _) = graph.commit_pos_map[&commit_hash];
+
     let max_pos_x = match image_width_mode {
         GraphImageWidthMode::Compact => edges.iter().map(|e| e.pos_x).fold(pos_x, usize::max),
         GraphImageWidthMode::Fixed => graph.max_pos_x,
@@ -428,14 +559,15 @@ fn build_graph_row_image(
 
     let cell_count = max_pos_x + 1;
 
-    calc_graph_row_image(
+    let image = render_graph_row_pixels(
         pos_x,
         cell_count,
-        &edges,
+        edges,
         image_params,
         drawing_pixels,
         graph_style,
-    )
+    );
+    (image, cell_count)
 }
 
 type Pixels = FxHashSet<(i32, i32)>;
@@ -856,6 +988,7 @@ fn calc_corner_edge_drawing_pixels(
     pixels
 }
 
+#[cfg(test)]
 pub fn calc_graph_row_image(
     commit_pos_x: usize,
     cell_count: usize,
@@ -864,6 +997,28 @@ pub fn calc_graph_row_image(
     drawing_pixels: &mut DrawingPixels,
     graph_style: GraphStyle,
 ) -> GraphRowImage {
+    let image = render_graph_row_pixels(
+        commit_pos_x,
+        cell_count,
+        edges,
+        image_params,
+        drawing_pixels,
+        graph_style,
+    );
+    GraphRowImage {
+        bytes: build_image(&image, image.width(), image.height()),
+        cell_count,
+    }
+}
+
+fn render_graph_row_pixels(
+    commit_pos_x: usize,
+    cell_count: usize,
+    edges: &[Edge],
+    image_params: &ImageParams,
+    drawing_pixels: &mut DrawingPixels,
+    graph_style: GraphStyle,
+) -> image::RgbaImage {
     let image_width = (image_params.width as usize * cell_count) as u32;
     let image_height = image_params.height as u32;
 
@@ -876,10 +1031,7 @@ pub fn calc_graph_row_image(
             drawing_pixels,
             graph_style,
         );
-        return GraphRowImage {
-            bytes: build_image(&image, image_width, image_height),
-            cell_count,
-        };
+        return image;
     }
 
     let mut img_buf = image::ImageBuffer::new(image_width, image_height);
@@ -919,9 +1071,7 @@ pub fn calc_graph_row_image(
         }
     }
 
-    let bytes = build_image(&img_buf, image_width, image_height);
-
-    GraphRowImage { bytes, cell_count }
+    img_buf
 }
 
 fn draw_background(
@@ -1385,12 +1535,19 @@ mod tests {
         let before = manager.prepared_image(&main).cells()[0]
             .symbol()
             .to_string();
+        let original_image = Rc::clone(&manager.prepared_image_map[&main]);
         manager.follow_commit(&hash("topic tip"));
         assert_eq!(manager.lineage.len(), 3); // topic tip, topic old, root
         assert!(manager.prepared_image_map.is_empty());
         manager.ensure_uploaded(&main);
         assert_ne!(before, manager.prepared_image(&main).cells()[0].symbol());
         manager.follow_commit(&hash("tip"));
+        manager.ensure_uploaded(&main);
+        assert!(Rc::ptr_eq(
+            &original_image,
+            &manager.prepared_image_map[&main]
+        ));
+        assert_eq!(before, manager.prepared_image(&main).cells()[0].symbol());
 
         let params = &manager.image_params;
         let mut preview = image::RgbaImage::new(

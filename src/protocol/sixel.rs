@@ -38,6 +38,17 @@ fn encode_at_size(
     column_offset: usize,
     cell: (u16, u16),
 ) -> crate::Result<String> {
+    let pixels = image::load_from_memory(png)?.to_rgba8();
+    encode_rgba_at_size(&pixels, columns, clear_columns, column_offset, cell)
+}
+
+pub(super) fn encode_rgba_at_size(
+    pixels: &image::RgbaImage,
+    columns: usize,
+    clear_columns: usize,
+    column_offset: usize,
+    cell: (u16, u16),
+) -> crate::Result<String> {
     if clear_columns == 0 || columns == 0 {
         return Err("Sixel graph and viewport widths must be positive".into());
     }
@@ -51,18 +62,17 @@ fn encode_at_size(
         .filter(|width| *width > 0)
         .ok_or("invalid Sixel graph width")?;
     let height = u32::from(cell.1);
-    let source = image::load_from_memory(png)?;
-    let source_x = (u64::from(source.width()) * column_offset as u64 / columns as u64) as u32;
-    let source_end = (u64::from(source.width()) * (column_offset + visible_columns) as u64
+    let source_x = (u64::from(pixels.width()) * column_offset as u64 / columns as u64) as u32;
+    let source_end = (u64::from(pixels.width()) * (column_offset + visible_columns) as u64
         / columns as u64) as u32;
-    let visible = source
-        .crop_imm(source_x, 0, source_end - source_x, source.height())
-        .resize_exact(
-            visible_columns as u32 * u32::from(cell.0),
-            height,
-            FilterType::Lanczos3,
-        )
-        .to_rgba8();
+    let cropped =
+        image::imageops::crop_imm(pixels, source_x, 0, source_end - source_x, pixels.height());
+    let visible = image::imageops::resize(
+        &*cropped,
+        visible_columns as u32 * u32::from(cell.0),
+        height,
+        FilterType::Lanczos3,
+    );
     let mut image = image::RgbaImage::new(width, height);
     image::imageops::replace(&mut image, &visible, 0, 0);
     let sixel = SixelImage::try_from_rgba(image.into_raw(), width as usize, height as usize)?

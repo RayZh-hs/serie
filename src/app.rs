@@ -30,7 +30,7 @@ use crate::{
     protocol::ImageProtocol,
     search::SearchOptions,
     view::{branch_filter::BranchFilterDialog, ListRefreshViewContext, RefreshViewContext, View},
-    widget::commit_list::{CommitInfo, CommitListState},
+    widget::commit_list::{CommitInfo, CommitListState, SearchState},
 };
 
 #[derive(Debug, Default)]
@@ -179,13 +179,14 @@ impl<'a> App<'a> {
 impl App<'_> {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<Ret, std::io::Error> {
         self.app_status.pending_clear = PendingClear::Screen;
+        let mut pending_event = None;
 
         loop {
             self.prepare_render(terminal)?;
             // Keep image deletion, uploads, and text updates in the same frame.
             // Preparation and event handling stay outside the synchronized update.
             io::stdout().sync_update(|_| self.draw(terminal))??;
-            match self.ec.recv() {
+            match pending_event.take().unwrap_or_else(|| self.ec.recv()) {
                 AppEvent::Key(key) => {
                     match self.app_status.status_line {
                         StatusLine::None | StatusLine::Input { .. } => {
@@ -267,10 +268,27 @@ impl App<'_> {
                             self.ec.send(AppEvent::Quit);
                         }
                         Some(ue) => {
+                            let batch_navigation = matches!(
+                                ue,
+                                UserEvent::NavigateUp | UserEvent::NavigateDown
+                            ) && matches!(&self.view, View::List(view) if !matches!(view.as_list_state().search_state(), SearchState::Searching { .. }));
                             let event_with_count =
                                 process_numeric_prefix(&self.app_status.numeric_prefix, *ue, key);
                             self.view.handle_event(event_with_count, key);
                             self.app_status.numeric_prefix.clear();
+                            if batch_navigation {
+                                let (additional, next) =
+                                    drain_navigation_events(&self.ctx.keybind, *ue, || {
+                                        self.ec.try_recv()
+                                    });
+                                // Apply every step for scrolloff and boundary semantics,
+                                // but draw once for keys that arrived during rendering.
+                                for _ in 0..additional {
+                                    self.view
+                                        .handle_event(UserEventWithCount::from_event(*ue), key);
+                                }
+                                pending_event = next;
+                            }
                         }
                         None => {
                             if let StatusLine::Input { .. } = self.app_status.status_line {
@@ -986,6 +1004,21 @@ fn process_numeric_prefix(
     }
 }
 
+fn drain_navigation_events(
+    keybind: &KeyBind,
+    direction: UserEvent,
+    mut next: impl FnMut() -> Option<AppEvent>,
+) -> (usize, Option<AppEvent>) {
+    let mut count = 0;
+    for _ in 0..256 {
+        match next() {
+            Some(AppEvent::Key(key)) if keybind.get(&key) == Some(&direction) => count += 1,
+            event => return (count, event),
+        }
+    }
+    (count, None)
+}
+
 fn extract_user_command_by_number(
     user_command_number: usize,
     ctx: &AppContext,
@@ -1081,6 +1114,51 @@ mod tests {
     use rstest::rstest;
 
     use super::*;
+
+    #[test]
+    fn navigation_batch_preserves_opposite_directions_and_following_actions() {
+        let keybind = KeyBind::new(None);
+        let key = |code| AppEvent::Key(KeyEvent::from(code));
+        let mut events = [
+            key(KeyCode::Down),
+            key(KeyCode::Char('j')),
+            key(KeyCode::Up),
+            key(KeyCode::Enter),
+        ]
+        .into_iter();
+        let (count, pending) =
+            drain_navigation_events(&keybind, UserEvent::NavigateDown, || events.next());
+        assert_eq!(count, 2);
+        assert!(matches!(
+            pending,
+            Some(AppEvent::Key(KeyEvent {
+                code: KeyCode::Up,
+                ..
+            }))
+        ));
+        let (count, pending) =
+            drain_navigation_events(&keybind, UserEvent::NavigateUp, || events.next());
+        assert_eq!(count, 0);
+        assert!(matches!(
+            pending,
+            Some(AppEvent::Key(KeyEvent {
+                code: KeyCode::Enter,
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn navigation_batch_is_bounded_and_leaves_remaining_keys_queued() {
+        let keybind = KeyBind::new(None);
+        let mut events =
+            std::iter::repeat_with(|| AppEvent::Key(KeyEvent::from(KeyCode::Down))).take(300);
+        let (count, pending) =
+            drain_navigation_events(&keybind, UserEvent::NavigateDown, || events.next());
+        assert_eq!(count, 256);
+        assert!(pending.is_none());
+        assert_eq!(events.count(), 44);
+    }
 
     #[rstest]
     #[case(1)]

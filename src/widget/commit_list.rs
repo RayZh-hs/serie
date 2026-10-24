@@ -291,6 +291,7 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn ensure_visible_graph_uploaded(&mut self) {
+        self.graph_image_manager.begin_frame();
         if let Some(commit) = self.commits.get(self.offset + self.selected) {
             self.graph_image_manager
                 .follow_commit(&commit.commit.commit_hash);

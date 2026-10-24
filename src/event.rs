@@ -225,6 +225,10 @@ impl EventController {
     pub fn recv(&self) -> AppEvent {
         self.rx.recv()
     }
+
+    pub fn try_recv(&self) -> Option<AppEvent> {
+        self.rx.rx.try_recv().ok()
+    }
 }
 
 // The event triggered by user's key input

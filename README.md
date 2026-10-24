@@ -90,6 +90,11 @@ Click any commit row, in the graph or its text, to select it. This also works
 above the details or command pane and beside the refs list. The mouse wheel
 scrolls the active view. Hold Shift to use your terminal's text selection.
 
+Navigation reuses a bounded cache of encoded graph rows, including matching row
+geometry across commits, and sends Sixel pixels directly to the encoder. Queued
+Up/Down repeats are applied before drawing the next frame, keeping held keys
+responsive while preserving each selection step and the order of other actions.
+
 ## Usage
 
 ### Basic

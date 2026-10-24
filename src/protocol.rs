@@ -79,6 +79,27 @@ pub struct PreparedImage {
 }
 
 impl PreparedImage {
+    fn from_symbol(symbol: String, cell_width: usize) -> Self {
+        let mut cells = Vec::with_capacity(cell_width);
+        cells.push(PreparedImageCell {
+            symbol,
+            style: Style::default(),
+            // Image escapes occupy one buffer cell, regardless of string width.
+            diff_option: CellDiffOption::ForcedWidth(NonZeroU16::MIN),
+        });
+        for _ in 1..cell_width {
+            cells.push(PreparedImageCell {
+                symbol: String::new(),
+                style: Style::default(),
+                diff_option: CellDiffOption::Skip,
+            });
+        }
+        Self {
+            cells,
+            upload_data: None,
+        }
+    }
+
     pub fn cells(&self) -> &[PreparedImageCell] {
         &self.cells
     }
@@ -86,6 +107,19 @@ impl PreparedImage {
     pub fn take_upload_data(&mut self) -> Option<String> {
         self.upload_data.take()
     }
+}
+
+pub(crate) fn prepare_sixel_image(
+    pixels: &image::RgbaImage,
+    columns: usize,
+    clear_columns: usize,
+    column_offset: usize,
+    cell_size: (u16, u16),
+) -> PreparedImage {
+    let symbol =
+        sixel::encode_rgba_at_size(pixels, columns, clear_columns, column_offset, cell_size)
+            .expect("failed to encode the generated graph row as Sixel");
+    PreparedImage::from_symbol(symbol, clear_columns)
 }
 
 impl ImageProtocol {
@@ -113,25 +147,7 @@ impl ImageProtocol {
         } else {
             cell_width
         };
-        let mut cells = Vec::with_capacity(cell_width);
-        cells.push(PreparedImageCell {
-            symbol,
-            style: Style::default(),
-            // The escape sequence occupies one buffer cell. Covered cells are skipped below,
-            // so its string width must not make diffing jump past the image or into another row.
-            diff_option: CellDiffOption::ForcedWidth(NonZeroU16::MIN),
-        });
-        for _ in 1..cell_width {
-            cells.push(PreparedImageCell {
-                symbol: String::new(),
-                style: Style::default(),
-                diff_option: CellDiffOption::Skip,
-            });
-        }
-        PreparedImage {
-            cells,
-            upload_data: None,
-        }
+        PreparedImage::from_symbol(symbol, cell_width)
     }
 
     pub fn clear_line(&self, y: u16) {
