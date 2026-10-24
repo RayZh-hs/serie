@@ -11,9 +11,14 @@ It behaves similarly to the `--max-count` option of `git log`.
 
 A protocol type for rendering images of commit graphs.
 
-_Possible values:_ `auto`, `iterm`, `kitty`, `kitty-unicode`
+_Possible values:_ `auto`, `iterm`, `kitty`, `kitty-unicode`, `sixel`
 
 By default `auto` will guess the best supported protocol for the current terminal (if listed in [Supported terminal emulators](./compatibility.md#supported-terminal-emulators)).
+
+Use `--protocol sixel` in a Sixel-capable terminal, such as the
+[graphics-enabled Alacritty fork](https://github.com/ayosec/alacritty).
+Sixel must be selected explicitly. It keeps the pixel-rendered commit graph
+and requires the terminal to report its text area dimensions in pixels.
 
 ## -o, --order \<TYPE\>
 

@@ -246,6 +246,12 @@ impl App<'_> {
                 }
                 AppEvent::Resize(w, h) => {
                     let _ = (w, h);
+                    if matches!(
+                        self.ctx.image_protocol,
+                        crate::protocol::ImageProtocol::Sixel
+                    ) {
+                        self.app_status.pending_clear = PendingClear::Screen;
+                    }
                 }
                 AppEvent::Quit => {
                     self.cleanup_graph_images()?;

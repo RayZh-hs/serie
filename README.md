@@ -50,6 +50,27 @@ $ cargo install --locked serie
 
 For other download options, see [Installation](https://lusingander.github.io/serie/getting-started/installation.html).
 
+## Sixel support in this fork
+
+This fork keeps Serie's smooth commit graph and adds `--protocol sixel` for
+[ayosec/alacritty](https://github.com/ayosec/alacritty) and other Sixel terminals.
+Build with Rust 1.90 or newer using `cargo build --release --locked`, then run:
+
+```sh
+./target/release/serie --protocol sixel
+```
+
+To make Sixel the default, put this in `~/.config/serie/config.toml`:
+
+```toml
+[core.option]
+protocol = "sixel"
+```
+
+Use a terminal that reports its size in pixels. Upstream Alacritty does not
+support Sixel; the graphics fork is required. See
+[compatibility](docs/src/getting-started/compatibility.md#sixel-graphics).
+
 ## Usage
 
 ### Basic
@@ -70,7 +91,7 @@ Usage: serie [OPTIONS]
 
 Options:
   -n, --max-count <NUMBER>        Maximum number of commits to render
-  -p, --protocol <TYPE>           Image protocol to render graph [default: auto] [possible values: auto, iterm, kitty, kitty-unicode]
+  -p, --protocol <TYPE>           Image protocol to render graph [default: auto] [possible values: auto, iterm, kitty, kitty-unicode, sixel]
   -o, --order <TYPE>              Commit ordering algorithm [default: chrono] [possible values: chrono, topo]
   -g, --graph-width <TYPE>        Commit graph image cell width [default: auto] [possible values: auto, double, single]
   -s, --graph-style <TYPE>        Commit graph image edge style [default: rounded] [possible values: rounded, angular, curved]
@@ -129,7 +150,6 @@ For more information, see [Compatibility](https://lusingander.github.io/serie/ge
 
 ### Unsupported environments
 
-- Sixel graphics is not supported.
 - Other terminal multiplexers (screen, Zellij, etc.) other than those listed in [Partially supported environments](#partially-supported-environments) are not supported.
 - Windows is not officially supported. Please refer to [the related issue](https://github.com/lusingander/serie/issues/147#issuecomment-4192875627).
 

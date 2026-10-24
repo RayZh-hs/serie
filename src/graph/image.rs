@@ -48,6 +48,7 @@ pub struct GraphImageManager<'a> {
     drawing_pixels: DrawingPixels,
     image_protocol: ImageProtocol,
     session_nonce: u32,
+    sixel_cell_size: Option<(u16, u16)>,
 }
 
 impl<'a> GraphImageManager<'a> {
@@ -75,6 +76,7 @@ impl<'a> GraphImageManager<'a> {
             drawing_pixels,
             image_protocol,
             session_nonce: create_session_nonce(),
+            sixel_cell_size: None,
         }
     }
 
@@ -103,6 +105,15 @@ impl<'a> GraphImageManager<'a> {
     }
 
     pub fn ensure_uploaded(&mut self, commit_hash: &CommitHash) {
+        if matches!(self.image_protocol, ImageProtocol::Sixel) {
+            let size = crate::protocol::sixel_cell_size()
+                .expect("terminal stopped reporting its pixel dimensions");
+            if self.sixel_cell_size != Some(size) {
+                self.prepared_image_map.clear();
+                self.image_ids.clear();
+                self.sixel_cell_size = Some(size);
+            }
+        }
         if self.prepared_image_map.contains_key(commit_hash) {
             return;
         }

@@ -10,6 +10,9 @@ use ratatui::{
     style::{Color, Style},
 };
 
+mod sixel;
+pub(crate) use sixel::cell_size as sixel_cell_size;
+
 // By default assume the Iterm2 is the best protocol to use for all terminals *unless* an env
 // variable is set that suggests the terminal is probably Kitty.
 pub fn auto_detect() -> ImageProtocol {
@@ -45,6 +48,7 @@ pub enum ImageProtocol {
     Iterm2,
     Kitty,
     KittyUnicode { tmux: bool },
+    Sixel,
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +92,8 @@ impl ImageProtocol {
     pub fn prepare_image(&self, bytes: &[u8], cell_width: usize, image_id: u32) -> PreparedImage {
         let symbol = match self {
             ImageProtocol::Iterm2 => iterm2_encode(bytes, cell_width, 1),
+            ImageProtocol::Sixel => sixel::encode(bytes, cell_width)
+                .expect("failed to encode the generated graph row as Sixel"),
             ImageProtocol::Kitty => kitty_encode(bytes, cell_width, 1),
             ImageProtocol::KittyUnicode { tmux } => {
                 return kitty_unicode_prepare(bytes, cell_width, image_id, *tmux);
@@ -116,7 +122,7 @@ impl ImageProtocol {
 
     pub fn clear_line(&self, y: u16) {
         match self {
-            ImageProtocol::Iterm2 => {}
+            ImageProtocol::Iterm2 | ImageProtocol::Sixel => {}
             ImageProtocol::Kitty => kitty_clear_line(y),
             ImageProtocol::KittyUnicode { .. } => {}
         }
@@ -124,7 +130,7 @@ impl ImageProtocol {
 
     pub fn clear(&self) {
         match self {
-            ImageProtocol::Iterm2 => {}
+            ImageProtocol::Iterm2 | ImageProtocol::Sixel => {}
             ImageProtocol::Kitty => kitty_clear(),
             ImageProtocol::KittyUnicode { .. } => {}
         }
@@ -132,7 +138,7 @@ impl ImageProtocol {
 
     pub fn delete_images(&self, image_ids: &[u32]) -> Result<(), std::io::Error> {
         match self {
-            ImageProtocol::Iterm2 | ImageProtocol::Kitty => Ok(()),
+            ImageProtocol::Iterm2 | ImageProtocol::Kitty | ImageProtocol::Sixel => Ok(()),
             ImageProtocol::KittyUnicode { tmux } => kitty_unicode_delete_images(image_ids, *tmux),
         }
     }

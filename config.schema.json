@@ -19,7 +19,8 @@
                 "auto",
                 "iterm",
                 "kitty",
-                "kitty-unicode"
+                "kitty-unicode",
+                "sixel"
               ],
               "default": "auto"
             },
