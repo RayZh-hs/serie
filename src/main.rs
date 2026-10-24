@@ -17,6 +17,10 @@ mod widget;
 mod mailmap_tests;
 
 #[cfg(test)]
+#[path = "tests/branches.rs"]
+mod branch_tests;
+
+#[cfg(test)]
 mod test_support;
 
 use std::{path::Path, rc::Rc};
@@ -205,10 +209,21 @@ fn main() -> Result<()> {
 
     let ec = event::EventController::init();
     let mut refresh_view_context = None;
+    let mut branch_filter = git::BranchFilter::All;
     let mut terminal = None;
 
     let ret = loop {
-        let repository = git::Repository::load(Path::new("."), order, max_count, mailmap)?;
+        let repository = if branch_filter == git::BranchFilter::All {
+            git::Repository::load(Path::new("."), order, max_count, mailmap)?
+        } else {
+            git::Repository::load_filtered(
+                Path::new("."),
+                order,
+                max_count,
+                mailmap,
+                branch_filter.clone(),
+            )?
+        };
 
         let mut graph = graph::calc_graph(&repository, primary_branch.as_deref());
 
@@ -260,6 +275,7 @@ fn main() -> Result<()> {
                 break Ok(());
             }
             Ok(Ret::Refresh(request)) => {
+                branch_filter = request.branch_filter;
                 refresh_view_context = Some(request.context);
                 continue;
             }

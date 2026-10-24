@@ -76,6 +76,12 @@ messages and metadata. Press `h`/`l` or Left/Right to pan the graph. Selecting
 another commit automatically brings its node into view; all branches remain
 available without reducing the font size or limiting the commit history.
 
+Press `F` in the commit list to choose which history to show: **All**, **Auto**
+(the branch checked out in this worktree, or detached HEAD), or a named local or
+remote branch. Use Up/Down or `j`/`k`, then Enter to apply; Esc cancels. Named
+branches include their reachable ancestors and merged history. The filter stays
+active when refreshing with `R`; Auto follows the current checkout on each refresh.
+
 ## Usage
 
 ### Basic

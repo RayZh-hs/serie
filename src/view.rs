@@ -1,3 +1,4 @@
+pub mod branch_filter;
 mod views;
 
 mod detail;

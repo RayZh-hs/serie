@@ -706,6 +706,9 @@
         "ref_list": {
           "$ref": "#/definitions/keybindArray"
         },
+        "branch_filter": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "search": {
           "$ref": "#/definitions/keybindArray"
         },

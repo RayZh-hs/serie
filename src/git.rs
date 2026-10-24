@@ -97,6 +97,14 @@ pub enum SortCommit {
     Topological,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub enum BranchFilter {
+    #[default]
+    All,
+    Auto,
+    Branch(String), // fully qualified local or remote branch ref
+}
+
 type CommitMap = FxHashMap<CommitHash, Commit>;
 type CommitsMap = FxHashMap<CommitHash, Vec<CommitHash>>;
 
@@ -105,6 +113,7 @@ type RefMap = FxHashMap<CommitHash, Vec<Ref>>;
 #[derive(Debug)]
 pub struct Repository {
     path: PathBuf,
+    branch_filter: BranchFilter,
     commit_map: CommitMap,
 
     parents_map: CommitsMap,
@@ -123,12 +132,46 @@ impl Repository {
         max_count: Option<usize>,
         mailmap: bool,
     ) -> Result<Self> {
+        Self::load_filtered(path, sort, max_count, mailmap, BranchFilter::All)
+    }
+
+    pub fn load_filtered(
+        path: &Path,
+        sort: SortCommit,
+        max_count: Option<usize>,
+        mailmap: bool,
+        mut branch_filter: BranchFilter,
+    ) -> Result<Self> {
         check_git_repository(path)?;
 
         let (mut ref_map, head) = load_refs(path);
 
-        let stashes = load_all_stashes(path, mailmap);
-        let commits = load_all_commits(path, sort, &head, &stashes, max_count, mailmap);
+        // A branch can disappear between refreshes. Keep the browser usable.
+        if let BranchFilter::Branch(reference) = &branch_filter {
+            let exists = ref_map.values().flatten().any(|r| match r {
+                Ref::Branch { name, .. } => reference == &format!("refs/heads/{name}"),
+                Ref::RemoteBranch { name, .. } => reference == &format!("refs/remotes/{name}"),
+                _ => false,
+            });
+            if !exists {
+                branch_filter = BranchFilter::All;
+            }
+        }
+
+        let stashes = if branch_filter == BranchFilter::All {
+            load_all_stashes(path, mailmap)
+        } else {
+            Vec::new()
+        };
+        let commits = load_all_commits(
+            path,
+            sort,
+            &head,
+            &stashes,
+            max_count,
+            mailmap,
+            &branch_filter,
+        );
         if commits.is_empty() {
             return Err("no commits in the repository".into());
         }
@@ -142,7 +185,7 @@ impl Repository {
         let stash_ref_map = load_stashes_as_refs(path);
         merge_ref_maps(&mut ref_map, stash_ref_map);
 
-        Ok(Self::new(
+        let mut repository = Self::new(
             path.to_path_buf(),
             commit_map,
             parents_map,
@@ -150,7 +193,9 @@ impl Repository {
             ref_map,
             head,
             commit_hashes,
-        ))
+        );
+        repository.branch_filter = branch_filter;
+        Ok(repository)
     }
 
     pub fn new(
@@ -164,6 +209,7 @@ impl Repository {
     ) -> Self {
         Self {
             path,
+            branch_filter: BranchFilter::All,
             commit_map,
             parents_map,
             children_map,
@@ -213,6 +259,10 @@ impl Repository {
         &self.head
     }
 
+    pub fn branch_filter(&self) -> &BranchFilter {
+        &self.branch_filter
+    }
+
     pub fn commit_detail(&self, commit_hash: &CommitHash) -> (Commit, Vec<FileChange>) {
         let commit = self.commit(commit_hash).unwrap().clone();
         let changes = if commit.parent_commit_hashes.is_empty() {
@@ -259,6 +309,7 @@ fn load_all_commits(
     stashes: &[Commit],
     max_count: Option<usize>,
     mailmap: bool,
+    branch_filter: &BranchFilter,
 ) -> Vec<Commit> {
     let mut cmd = Command::new("git");
     cmd.arg("log");
@@ -271,21 +322,32 @@ fn load_all_commits(
     .arg("--date=iso-strict")
     .arg("-z"); // use NUL as a delimiter
 
-    // exclude stashes and other refs
-    cmd.arg("--branches").arg("--remotes").arg("--tags");
-
-    // commits that are reachable from the stashes
-    stashes.iter().for_each(|stash| {
-        cmd.arg(stash.parent_commit_hashes[0].as_str());
-    });
-
-    if !matches!(head, Head::None) {
-        cmd.arg("HEAD");
+    match branch_filter {
+        BranchFilter::All => {
+            cmd.arg("--branches").arg("--remotes").arg("--tags");
+            for stash in stashes {
+                cmd.arg(stash.parent_commit_hashes[0].as_str());
+            }
+            if !matches!(head, Head::None) {
+                cmd.arg("HEAD");
+            }
+        }
+        BranchFilter::Auto => {
+            if matches!(head, Head::None) {
+                cmd.arg("--branches").arg("--remotes").arg("--tags");
+            } else {
+                cmd.arg("HEAD");
+            }
+        }
+        BranchFilter::Branch(reference) => {
+            cmd.arg(reference);
+        }
     }
 
     if let Some(n) = max_count {
         cmd.arg("--max-count").arg(n.to_string());
     }
+    cmd.arg("--");
 
     cmd.current_dir(path).stdout(Stdio::piped());
 

@@ -24,12 +24,12 @@ use crate::{
     external::{
         copy_to_clipboard, exec_user_command, exec_user_command_suspend, ExternalCommandParameters,
     },
-    git::{Commit, CommitHash, FileChange, Head, Ref, Repository},
+    git::{BranchFilter, Commit, CommitHash, FileChange, Head, Ref, Repository},
     graph::GraphImageManager,
     keybind::KeyBind,
     protocol::ImageProtocol,
     search::SearchOptions,
-    view::{RefreshViewContext, View},
+    view::{branch_filter::BranchFilterDialog, ListRefreshViewContext, RefreshViewContext, View},
     widget::commit_list::{CommitInfo, CommitListState},
 };
 
@@ -67,6 +67,7 @@ pub enum Ret {
 
 pub struct RefreshRequest {
     pub context: RefreshViewContext,
+    pub branch_filter: BranchFilter,
 }
 
 #[derive(Debug)]
@@ -98,6 +99,7 @@ struct AppStatus {
 pub struct App<'a> {
     repository: &'a Repository,
     view: View<'a>,
+    branch_filter_dialog: Option<BranchFilterDialog>,
     app_status: AppStatus,
     ctx: Rc<AppContext>,
     ec: &'a EventController,
@@ -156,6 +158,7 @@ impl<'a> App<'a> {
         let mut app = Self {
             repository,
             view,
+            branch_filter_dialog: None,
             app_status: AppStatus::default(),
             ctx,
             ec,
@@ -204,6 +207,52 @@ impl App<'_> {
                     }
 
                     let user_event = self.ctx.keybind.get(&key);
+
+                    if self.branch_filter_dialog.is_some()
+                        && user_event != Some(&UserEvent::ForceQuit)
+                    {
+                        match user_event {
+                            Some(
+                                UserEvent::Cancel | UserEvent::Close | UserEvent::BranchFilter,
+                            ) => {
+                                self.branch_filter_dialog = None;
+                                self.app_status.pending_clear = PendingClear::Screen;
+                            }
+                            Some(UserEvent::Confirm) => {
+                                let branch_filter =
+                                    self.branch_filter_dialog.take().unwrap().selected();
+                                if let View::List(view) = &self.view {
+                                    let context = RefreshViewContext::List {
+                                        list_context: ListRefreshViewContext::from(
+                                            view.as_list_state(),
+                                        ),
+                                    };
+                                    self.cleanup_graph_images()?;
+                                    return Ok(Ret::Refresh(RefreshRequest {
+                                        context,
+                                        branch_filter,
+                                    }));
+                                }
+                            }
+                            Some(event) => self
+                                .branch_filter_dialog
+                                .as_mut()
+                                .unwrap()
+                                .handle_event(*event),
+                            None => {}
+                        }
+                        self.app_status.numeric_prefix.clear();
+                        continue;
+                    }
+                    if user_event == Some(&UserEvent::BranchFilter)
+                        && matches!(self.view, View::List(_))
+                        && !matches!(self.app_status.status_line, StatusLine::Input { .. })
+                    {
+                        self.branch_filter_dialog = Some(BranchFilterDialog::new(self.repository));
+                        self.app_status.pending_clear = PendingClear::Screen;
+                        self.app_status.numeric_prefix.clear();
+                        continue;
+                    }
 
                     if let Some(UserEvent::Cancel) = user_event {
                         if !self.app_status.numeric_prefix.is_empty() {
@@ -300,7 +349,10 @@ impl App<'_> {
                 }
                 AppEvent::Refresh(context) => {
                     self.cleanup_graph_images()?;
-                    let request = RefreshRequest { context };
+                    let request = RefreshRequest {
+                        context,
+                        branch_filter: self.repository.branch_filter().clone(),
+                    };
                     return Ok(Ret::Refresh(request));
                 }
                 AppEvent::ClearStatusLine => {
@@ -344,7 +396,9 @@ impl App<'_> {
         let [view_area, _] = split_app_areas(area);
         self.update_state(view_area);
         self.view.update_layout(view_area);
-        self.view.prepare_graph_uploads();
+        if self.branch_filter_dialog.is_none() {
+            self.view.prepare_graph_uploads();
+        }
         Ok(())
     }
 
@@ -391,7 +445,11 @@ impl App<'_> {
 
         self.update_state(view_area);
 
-        self.view.render(f, view_area);
+        if let Some(dialog) = &mut self.branch_filter_dialog {
+            dialog.render(f, view_area, &self.ctx.color_theme);
+        } else {
+            self.view.render(f, view_area);
+        }
         self.render_status_line(f, status_line_area);
     }
 }

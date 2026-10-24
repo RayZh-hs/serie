@@ -27,6 +27,7 @@ The default key bindings can be overridden.
 | <kbd>H/M/L</kbd>                     | Select top/middle/bottom of the screen             | `select_top` `select_middle` `select_bottom` |
 | <kbd>Enter</kbd>                     | Show commit details<br>Apply search (if searching) | `confirm`                                    |
 | <kbd>Tab</kbd>                       | Open refs list                                     | `ref_list`                                   |
+| <kbd>F</kbd>                         | Filter branches (All / Auto / branch name)          | `branch_filter`                              |
 | <kbd>/</kbd>                         | Start search                                       | `search`                                     |
 | <kbd>Esc</kbd>                       | Cancel search                                      | `cancel`                                     |
 | <kbd>n/N</kbd>                       | Go to next/previous search match                   | `go_to_next` `go_to_previous`                |
