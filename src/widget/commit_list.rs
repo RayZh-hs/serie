@@ -505,6 +505,19 @@ impl<'a> CommitListState<'a> {
         (self.selected, self.offset, self.height)
     }
 
+    pub fn select_at(&mut self, position: ratatui::layout::Position, area: Rect) -> bool {
+        if !area.contains(position) {
+            return false;
+        }
+        let row = usize::from(position.y - area.y);
+        if self.offset + row >= self.total || self.selected == row {
+            return false;
+        }
+        // A click selects exactly the displayed row without moving the viewport.
+        self.selected = row;
+        true
+    }
+
     pub fn reset_height(&mut self, height: usize) {
         self.height = height;
     }
@@ -1338,6 +1351,48 @@ mod tests {
         for c in query.chars() {
             state.handle_search_input(KeyEvent::from(KeyCode::Char(c)));
         }
+    }
+
+    #[test]
+    fn click_selects_displayed_row_without_scrolling_or_changing_mark() {
+        use ratatui::layout::Position;
+        with_commit_list_state(&["a", "b", "c", "d", "e", "f", "g"], |state| {
+            state.reset_height(3);
+            state.scrolloff = 1;
+            state.select_commit_hash(&CommitHash::from(
+                "0000000000000000000000000000000000000004",
+            ));
+            state.toggle_mark();
+            let mark = state.marked_commit_hash().cloned();
+            let offset = state.offset;
+            let area = Rect::new(5, 7, 80, 3);
+            assert!(state.select_at(Position::new(5, 9), area));
+            assert_eq!(state.current_list_status(), (2, offset, 3));
+            assert_eq!(state.marked_commit_hash(), mark.as_ref());
+            assert_eq!(
+                state.selected_commit_hash(),
+                &state.commits[offset + 2].commit.commit_hash
+            );
+            assert!(state.select_at(Position::new(84, 7), area));
+            assert_eq!(state.current_list_status(), (0, offset, 3));
+            assert!(!state.select_at(Position::new(84, 7), area));
+        });
+    }
+
+    #[test]
+    fn click_ignores_blank_rows_and_positions_outside_the_commit_pane() {
+        use ratatui::layout::Position;
+        with_commit_list_state(&["a", "b"], |state| {
+            state.reset_height(5);
+            let area = Rect::new(5, 7, 80, 5);
+            let before = state.current_list_status();
+            for (x, y) in [(4, 8), (85, 8), (10, 6), (10, 12), (10, 9), (10, 11)] {
+                assert!(!state.select_at(Position::new(x, y), area));
+                assert_eq!(state.current_list_status(), before);
+            }
+            assert!(state.select_at(Position::new(20, 8), area));
+            assert_eq!(state.current_list_status(), (1, 0, 5));
+        });
     }
 
     #[test]

@@ -7,7 +7,9 @@ use std::{
     thread,
 };
 
-use ratatui::crossterm::event::KeyEvent;
+use ratatui::crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, KeyEvent, MouseButton, MouseEvent, MouseEventKind,
+};
 use serde::{
     de::{self, Deserializer, Visitor},
     Deserialize,
@@ -18,6 +20,7 @@ use crate::view::RefreshViewContext;
 #[derive(Debug)]
 pub enum AppEvent {
     Key(KeyEvent),
+    Mouse(MouseEvent),
     Resize(usize, usize),
     Quit,
     OpenDetail,
@@ -54,6 +57,21 @@ pub enum AppEvent {
     #[expect(dead_code)]
     NotifyWarn(String),
     NotifyError(String),
+}
+
+pub struct MouseCapture;
+
+impl MouseCapture {
+    pub fn enable() -> std::io::Result<Self> {
+        ratatui::crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
+        Ok(Self)
+    }
+}
+
+impl Drop for MouseCapture {
+    fn drop(&mut self) {
+        let _ = ratatui::crossterm::execute!(std::io::stdout(), DisableMouseCapture);
+    }
 }
 
 #[derive(Clone)]
@@ -131,6 +149,16 @@ impl EventController {
                         ratatui::crossterm::event::Event::Resize(w, h) => {
                             tx.send(AppEvent::Resize(w as usize, h as usize));
                         }
+                        ratatui::crossterm::event::Event::Mouse(mouse) => {
+                            if matches!(
+                                mouse.kind,
+                                MouseEventKind::Down(MouseButton::Left)
+                                    | MouseEventKind::ScrollDown
+                                    | MouseEventKind::ScrollUp
+                            ) {
+                                tx.send(AppEvent::Mouse(mouse));
+                            }
+                        }
                         _ => {}
                     },
                     Err(e) => {
@@ -151,7 +179,8 @@ impl EventController {
     pub fn resume(&self) {
         ratatui::crossterm::execute!(
             std::io::stdout(),
-            ratatui::crossterm::terminal::EnterAlternateScreen
+            ratatui::crossterm::terminal::EnterAlternateScreen,
+            EnableMouseCapture
         )
         .unwrap();
         ratatui::crossterm::terminal::enable_raw_mode().unwrap();
@@ -166,6 +195,7 @@ impl EventController {
         ratatui::crossterm::terminal::disable_raw_mode().unwrap();
         ratatui::crossterm::execute!(
             std::io::stdout(),
+            DisableMouseCapture,
             ratatui::crossterm::terminal::LeaveAlternateScreen
         )
         .unwrap();

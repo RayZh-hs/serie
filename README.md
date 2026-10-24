@@ -86,6 +86,10 @@ remote branch. Use Up/Down or `j`/`k`, then Enter to apply; Esc cancels. Named
 branches include their reachable ancestors and merged history. The filter stays
 active when refreshing with `R`; Auto follows the current checkout on each refresh.
 
+Click any commit row, in the graph or its text, to select it. This also works
+above the details or command pane and beside the refs list. The mouse wheel
+scrolls the active view. Hold Shift to use your terminal's text selection.
+
 ## Usage
 
 ### Basic

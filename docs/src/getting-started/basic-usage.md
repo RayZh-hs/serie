@@ -21,3 +21,10 @@ The graph highlights the selected commit's first-parent lineage and dims other
 connections, including merge-side lines. Commit circles retain their colors.
 Wide Sixel graphs automatically center on the selected circle when selection
 changes; `h`/`l` and Left/Right also let you pan manually.
+
+Left-click a commit row to select it, either on its graph or text. In the details
+and user command views, clicking the commit list also updates the lower pane.
+Clicks in the lower pane, refs sidebar, status line, or blank rows do not select
+a commit. The mouse wheel moves through the active view. Hold Shift while
+dragging to use the terminal's own text selection. Mouse capture is released
+when exiting or suspending Serie for an external command.

@@ -211,6 +211,7 @@ fn main() -> Result<()> {
     let mut refresh_view_context = None;
     let mut branch_filter = git::BranchFilter::All;
     let mut terminal = None;
+    let mut mouse_capture = None;
 
     let ret = loop {
         let repository = if branch_filter == git::BranchFilter::All {
@@ -258,6 +259,7 @@ fn main() -> Result<()> {
 
         if terminal.is_none() {
             terminal = Some(ratatui::init());
+            mouse_capture = Some(event::MouseCapture::enable()?);
         }
 
         let mut app = App::new(
@@ -285,6 +287,7 @@ fn main() -> Result<()> {
         }
     };
 
+    drop(mouse_capture);
     ratatui::restore();
     ret.map_err(Into::into)
 }

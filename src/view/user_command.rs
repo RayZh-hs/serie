@@ -227,6 +227,21 @@ impl<'a> UserCommandView<'a> {
         });
     }
 
+    pub fn select_at(
+        &mut self,
+        position: ratatui::layout::Position,
+        area: Rect,
+        repository: &Repository,
+        exec_command: ExecCommandFn,
+    ) -> bool {
+        let [list_area, _] = self.split_areas(area);
+        if !self.as_mut_list_state().select_at(position, list_area) {
+            return false;
+        }
+        self.update_selected_commit(repository, area, exec_command, |_| {});
+        true
+    }
+
     fn update_selected_commit<F>(
         &mut self,
         repository: &Repository,

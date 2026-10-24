@@ -211,6 +211,19 @@ impl<'a> ListView<'a> {
         self.as_mut_list_state().update_graph_viewport(area.width);
     }
 
+    pub fn select_at(&mut self, position: ratatui::layout::Position, area: Rect) -> bool {
+        let changed = self.as_mut_list_state().select_at(position, area);
+        if changed
+            && matches!(
+                self.as_list_state().search_state(),
+                SearchState::Applied { .. }
+            )
+        {
+            self.update_matched_message();
+        }
+        changed
+    }
+
     pub fn prepare_graph_uploads(&mut self) {
         self.as_mut_list_state().ensure_visible_graph_uploaded();
     }

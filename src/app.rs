@@ -6,10 +6,10 @@ use std::{
 use ratatui::{
     backend::Backend,
     crossterm::{
-        event::{KeyCode, KeyEvent},
+        event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind},
         SynchronizedUpdate,
     },
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Position, Rect},
     style::{Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, Padding, Paragraph},
@@ -293,6 +293,7 @@ impl App<'_> {
                         }
                     }
                 }
+                AppEvent::Mouse(mouse) => self.handle_mouse(mouse),
                 AppEvent::Resize(w, h) => {
                     let _ = (w, h);
                     if matches!(
@@ -455,6 +456,51 @@ impl App<'_> {
 }
 
 impl App<'_> {
+    fn handle_mouse(&mut self, mouse: MouseEvent) {
+        if self.branch_filter_dialog.is_some() {
+            return;
+        }
+        let position = Position::new(mouse.column, mouse.row);
+        let area = self.app_status.view_area;
+        if !area.contains(position) {
+            return;
+        }
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let changed = match &mut self.view {
+                    View::List(view) => view.select_at(position, area),
+                    View::Detail(view) => view.select_at(position, area, self.repository),
+                    View::UserCommand(view) => view.select_at(
+                        position,
+                        area,
+                        self.repository,
+                        build_external_command_parameters_and_exec_command,
+                    ),
+                    View::Refs(view) => view.select_at(position, area),
+                    _ => false,
+                };
+                if changed {
+                    self.app_status.numeric_prefix.clear();
+                    if !matches!(self.app_status.status_line, StatusLine::Input { .. }) {
+                        self.clear_status_line();
+                    }
+                }
+            }
+            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+                let event = if mouse.kind == MouseEventKind::ScrollDown {
+                    UserEvent::NavigateDown
+                } else {
+                    UserEvent::NavigateUp
+                };
+                self.view.handle_event(
+                    UserEventWithCount::from_event(event),
+                    KeyEvent::from(KeyCode::Null),
+                );
+            }
+            _ => {}
+        }
+    }
+
     fn render_status_line(&self, f: &mut Frame, area: Rect) {
         let text: Line = match &self.app_status.status_line {
             StatusLine::None => {

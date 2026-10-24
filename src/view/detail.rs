@@ -192,6 +192,20 @@ impl<'a> DetailView<'a> {
         self.update_selected_commit(repository, |state| state.select_parent());
     }
 
+    pub fn select_at(
+        &mut self,
+        position: ratatui::layout::Position,
+        area: Rect,
+        repository: &Repository,
+    ) -> bool {
+        let [list_area, _] = self.split_areas(area);
+        if !self.as_mut_list_state().select_at(position, list_area) {
+            return false;
+        }
+        self.update_selected_commit(repository, |_| {});
+        true
+    }
+
     fn update_selected_commit<F>(&mut self, repository: &Repository, update_commit_list_state: F)
     where
         F: FnOnce(&mut CommitListState<'a>),

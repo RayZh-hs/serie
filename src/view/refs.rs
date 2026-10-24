@@ -150,6 +150,11 @@ impl<'a> RefsView<'a> {
         }
     }
 
+    pub fn select_at(&mut self, position: ratatui::layout::Position, area: Rect) -> bool {
+        let [list_area, _] = self.split_areas(area);
+        self.as_mut_list_state().select_at(position, list_area)
+    }
+
     fn copy_ref_name(&self) {
         if let Some(selected) = self.ref_list_state.selected_branch() {
             self.copy_to_clipboard("Branch Name".into(), selected);
