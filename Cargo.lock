@@ -2058,7 +2058,7 @@ dependencies = [
 
 [[package]]
 name = "serie"
-version = "0.10.0+sixel.2"
+version = "0.10.0+sixel.3"
 dependencies = [
  "ansi-to-tui",
  "arboard",

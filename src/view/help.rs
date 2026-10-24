@@ -231,6 +231,8 @@ fn build_lines(
     let (help_key_lines, help_value_lines) = build_block_lines("Help:", help_helps, color_theme, keybind);
 
     let mut list_helps = vec![
+        (vec![UserEvent::NavigateLeft], "Pan wide graph left".into()),
+        (vec![UserEvent::NavigateRight], "Pan wide graph right".into()),
         (vec![UserEvent::NavigateDown, UserEvent::SelectDown], "Move down".into()),
         (vec![UserEvent::NavigateUp, UserEvent::SelectUp], "Move up".into()),
         (vec![UserEvent::GoToParent], "Go to parent".into()),

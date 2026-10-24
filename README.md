@@ -71,6 +71,11 @@ Use a terminal that reports its size in pixels. Upstream Alacritty does not
 support Sixel; the graphics fork is required. See
 [compatibility](docs/src/getting-started/compatibility.md#sixel-graphics).
 
+Wide Sixel graphs use up to one third of the window, leaving room for commit
+messages and metadata. Press `h`/`l` or Left/Right to pan the graph. Selecting
+another commit automatically brings its node into view; all branches remain
+available without reducing the font size or limiting the commit history.
+
 ## Usage
 
 ### Basic

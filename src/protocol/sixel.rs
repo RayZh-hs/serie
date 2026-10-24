@@ -22,27 +22,49 @@ fn cell_size_from(size: WindowSize) -> io::Result<(u16, u16)> {
     Ok((width, height))
 }
 
-pub(super) fn encode(png: &[u8], columns: usize, clear_columns: usize) -> crate::Result<String> {
-    encode_at_size(png, columns, clear_columns, cell_size()?)
+pub(super) fn encode(
+    png: &[u8],
+    columns: usize,
+    clear_columns: usize,
+    column_offset: usize,
+) -> crate::Result<String> {
+    encode_at_size(png, columns, clear_columns, column_offset, cell_size()?)
 }
 
 fn encode_at_size(
     png: &[u8],
     columns: usize,
     clear_columns: usize,
+    column_offset: usize,
     cell: (u16, u16),
 ) -> crate::Result<String> {
-    if clear_columns < columns {
-        return Err("Sixel clear width must cover the graph image".into());
+    if clear_columns == 0 || columns == 0 {
+        return Err("Sixel graph and viewport widths must be positive".into());
     }
-    let width = u32::try_from(columns)?
+    let visible_columns = columns.saturating_sub(column_offset).min(clear_columns);
+    let clear = format!("\x1b7\x1b[{clear_columns}X");
+    if visible_columns == 0 {
+        return Ok(format!("{clear}\x1b8\x1b[1C"));
+    }
+    let width = u32::try_from(clear_columns)?
         .checked_mul(u32::from(cell.0))
         .filter(|width| *width > 0)
         .ok_or("invalid Sixel graph width")?;
     let height = u32::from(cell.1);
-    let image = image::load_from_memory(png)?
-        .resize_exact(width, height, FilterType::Lanczos3)
+    let source = image::load_from_memory(png)?;
+    let source_x = (u64::from(source.width()) * column_offset as u64 / columns as u64) as u32;
+    let source_end = (u64::from(source.width()) * (column_offset + visible_columns) as u64
+        / columns as u64) as u32;
+    let visible = source
+        .crop_imm(source_x, 0, source_end - source_x, source.height())
+        .resize_exact(
+            visible_columns as u32 * u32::from(cell.0),
+            height,
+            FilterType::Lanczos3,
+        )
         .to_rgba8();
+    let mut image = image::RgbaImage::new(width, height);
+    image::imageops::replace(&mut image, &visible, 0, 0);
     let sixel = SixelImage::try_from_rgba(image.into_raw(), width as usize, height as usize)?
         .with_aspect_ratio(PixelAspectRatio::Square)
         .with_background_mode(BackgroundMode::Transparent)
@@ -58,7 +80,7 @@ fn encode_at_size(
     // ECH uses the current background and leaves the cursor in place, preserving
     // the terminal's transparent background without erasing the commit text.
     // Restore the cursor after Sixel to match Ratatui's ForcedWidth(1) cell.
-    Ok(format!("\x1b7\x1b[{clear_columns}X{sixel}\x1b8\x1b[1C"))
+    Ok(format!("{clear}{sixel}\x1b8\x1b[1C"))
 }
 
 #[cfg(test)]
@@ -108,7 +130,7 @@ mod tests {
         });
         let mut png = Cursor::new(Vec::new());
         image.write_to(&mut png, image::ImageFormat::Png).unwrap();
-        let encoded = encode_at_size(png.get_ref(), 2, 2, (10, 24)).unwrap();
+        let encoded = encode_at_size(png.get_ref(), 2, 2, 0, (10, 24)).unwrap();
         assert!(encoded.starts_with("\x1b7\x1b[2X\x1bP"));
         assert!(encoded.ends_with("\x1b\\\x1b8\x1b[1C"));
         let payload = encoded
@@ -126,7 +148,7 @@ mod tests {
         let image = image::RgbaImage::from_pixel(50, 50, image::Rgba([0, 255, 0, 255]));
         let mut png = Cursor::new(Vec::new());
         image.write_to(&mut png, image::ImageFormat::Png).unwrap();
-        let encoded = encode_at_size(png.get_ref(), 2, 2, (16, 35)).unwrap();
+        let encoded = encode_at_size(png.get_ref(), 2, 2, 0, (16, 35)).unwrap();
         let payload = encoded
             .strip_prefix("\x1b7\x1b[2X")
             .unwrap()
@@ -151,14 +173,53 @@ mod tests {
         // A one-lane row can replace a multi-lane row at the same screen
         // position when scrolling. The clear must cover all eight columns,
         // even though the compact image occupies only two of them.
-        let encoded = encode_at_size(png.get_ref(), 2, 8, (10, 24)).unwrap();
+        let encoded = encode_at_size(png.get_ref(), 2, 8, 0, (10, 24)).unwrap();
         let payload = encoded
             .strip_prefix("\x1b7\x1b[8X")
             .expect("the whole previous graph row must be erased before drawing")
             .strip_suffix("\x1b8\x1b[1C")
             .unwrap();
         let decoded: SixelImage = payload.parse().unwrap();
+        assert_eq!(decoded.dimensions(), (80, 24));
+        assert!(decoded.has_transparency());
+        assert!(encode_at_size(png.get_ref(), 2, 0, 0, (10, 24)).is_err());
+    }
+
+    #[test]
+    fn viewport_crops_branches_without_squeezing_the_image() {
+        let image = image::RgbaImage::from_fn(80, 24, |x, _| {
+            if x < 40 {
+                image::Rgba([255, 0, 0, 255])
+            } else {
+                image::Rgba([0, 255, 0, 255])
+            }
+        });
+        let mut png = Cursor::new(Vec::new());
+        image.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let encoded = encode_at_size(png.get_ref(), 8, 2, 4, (10, 24)).unwrap();
+        let payload = encoded
+            .strip_prefix("\x1b7\x1b[2X")
+            .unwrap()
+            .strip_suffix("\x1b8\x1b[1C")
+            .unwrap();
+        let decoded: SixelImage = payload.parse().unwrap();
         assert_eq!(decoded.dimensions(), (20, 24));
-        assert!(encode_at_size(png.get_ref(), 2, 1, (10, 24)).is_err());
+        assert!(decoded
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .all(|pixel| *pixel == [0, 255, 0, 255]));
+    }
+
+    #[test]
+    fn viewport_beyond_a_compact_row_clears_its_previous_pixels() {
+        let image = image::RgbaImage::from_pixel(25, 50, image::Rgba([255, 0, 0, 255]));
+        let mut png = Cursor::new(Vec::new());
+        image.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        assert_eq!(
+            encode_at_size(png.get_ref(), 2, 8, 4, (10, 24)).unwrap(),
+            "\x1b7\x1b[8X\x1b8\x1b[1C"
+        );
     }
 }

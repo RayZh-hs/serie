@@ -34,6 +34,23 @@ pub enum GraphImageWidthMode {
     Fixed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GraphViewport {
+    offset: usize,
+    width: usize,
+}
+
+impl GraphViewport {
+    fn follow(&mut self, column: usize, node_width: usize, total_width: usize) {
+        if column < self.offset {
+            self.offset = column;
+        } else if column + node_width > self.offset + self.width {
+            self.offset = (column + node_width).saturating_sub(self.width);
+        }
+        self.offset = self.offset.min(total_width.saturating_sub(self.width));
+    }
+}
+
 #[derive(Debug)]
 pub struct GraphImageManager<'a> {
     prepared_image_map: FxHashMap<CommitHash, PreparedImage>,
@@ -49,6 +66,8 @@ pub struct GraphImageManager<'a> {
     image_protocol: ImageProtocol,
     session_nonce: u32,
     sixel_cell_size: Option<(u16, u16)>,
+    viewport: Option<GraphViewport>,
+    focused_commit: Option<CommitHash>,
 }
 
 impl<'a> GraphImageManager<'a> {
@@ -77,6 +96,8 @@ impl<'a> GraphImageManager<'a> {
             image_protocol,
             session_nonce: create_session_nonce(),
             sixel_cell_size: None,
+            viewport: None,
+            focused_commit: None,
         }
     }
 
@@ -94,6 +115,77 @@ impl<'a> GraphImageManager<'a> {
             CellWidthType::Double => cell_count * 2,
             CellWidthType::Single => cell_count,
         }
+    }
+
+    pub fn display_cell_width(&self) -> u16 {
+        self.viewport
+            .map_or(self.graph_cell_width(), |viewport| viewport.width as u16)
+    }
+
+    pub fn set_viewport_width(&mut self, width: u16) {
+        if !matches!(self.image_protocol, ImageProtocol::Sixel) {
+            return;
+        }
+        let total = self.graph_cell_width() as usize;
+        let width = usize::from(width).max(1).min(total);
+        let offset = self
+            .viewport
+            .map_or(0, |viewport| viewport.offset)
+            .min(total - width);
+        let viewport = GraphViewport { offset, width };
+        if self.viewport != Some(viewport) {
+            self.viewport = Some(viewport);
+            self.focused_commit = None;
+            self.prepared_image_map.clear();
+        }
+    }
+
+    pub fn follow_commit(&mut self, hash: &CommitHash) {
+        if self.focused_commit.as_ref() == Some(hash) {
+            return;
+        }
+        self.focused_commit = Some(hash.clone());
+        let Some(mut viewport) = self.viewport else {
+            return;
+        };
+        let Some(&(column, _)) = self.graph.commit_pos_map.get(hash) else {
+            return;
+        };
+        let node_width = match self.cell_width_type {
+            CellWidthType::Double => 2,
+            CellWidthType::Single => 1,
+        };
+        viewport.follow(
+            column * node_width,
+            node_width,
+            self.graph_cell_width() as usize,
+        );
+        if self.viewport != Some(viewport) {
+            self.viewport = Some(viewport);
+            self.prepared_image_map.clear();
+        }
+    }
+
+    pub fn pan(&mut self, right: bool, count: usize) -> Option<(usize, usize, usize)> {
+        let total = self.graph_cell_width() as usize;
+        let mut viewport = self.viewport?;
+        if viewport.width == total {
+            return None;
+        }
+        let step = count.saturating_mul(4);
+        viewport.offset = if right {
+            viewport
+                .offset
+                .saturating_add(step)
+                .min(total - viewport.width)
+        } else {
+            viewport.offset.saturating_sub(step)
+        };
+        if self.viewport != Some(viewport) {
+            self.viewport = Some(viewport);
+            self.prepared_image_map.clear();
+        }
+        Some((viewport.offset + 1, viewport.offset + viewport.width, total))
     }
 
     pub fn image_ids(&self) -> &FxHashSet<u32> {
@@ -130,7 +222,8 @@ impl<'a> GraphImageManager<'a> {
             self.cell_width_type,
             self.image_protocol,
             image_id,
-            self.graph_cell_width() as usize,
+            self.display_cell_width() as usize,
+            self.viewport.map_or(0, |viewport| viewport.offset),
         );
         if let Some(upload_data) = image.take_upload_data() {
             self.pending_uploads.push(upload_data);
@@ -163,12 +256,19 @@ impl GraphRowImage {
         image_protocol: ImageProtocol,
         image_id: u32,
         clear_cell_width: usize,
+        column_offset: usize,
     ) -> PreparedImage {
         let image_cell_width = match cell_width_type {
             CellWidthType::Double => self.cell_count * 2,
             CellWidthType::Single => self.cell_count,
         };
-        image_protocol.prepare_image(&self.bytes, image_cell_width, image_id, clear_cell_width)
+        image_protocol.prepare_image(
+            &self.bytes,
+            image_cell_width,
+            image_id,
+            clear_cell_width,
+            column_offset,
+        )
     }
 }
 
@@ -1131,6 +1231,49 @@ mod tests {
     const SNAPSHOT_DIR: &str = "./tests/graph/image";
 
     type TestParam = (usize, Vec<(EdgeType, usize, usize)>);
+
+    #[test]
+    fn viewport_follows_selected_nodes_without_exceeding_the_graph() {
+        let mut viewport = GraphViewport {
+            offset: 0,
+            width: 64,
+        };
+        viewport.follow(253, 1, 254);
+        assert_eq!(viewport.offset, 190);
+        viewport.follow(0, 1, 254);
+        assert_eq!(viewport.offset, 0);
+        viewport.follow(100, 2, 508);
+        assert_eq!(viewport.offset, 38);
+        assert!(100 >= viewport.offset && 102 <= viewport.offset + viewport.width);
+    }
+
+    #[test]
+    fn graph_panning_clamps_at_both_ends() {
+        let graph = Graph {
+            commits: Vec::new(),
+            commit_pos_map: FxHashMap::default(),
+            edges: Vec::new(),
+            max_pos_x: 253,
+            warning: None,
+        };
+        let colors = GraphColorSet::new(&GraphColorConfig::default());
+        let mut manager = GraphImageManager::new(
+            &graph,
+            &colors,
+            CellWidthType::Single,
+            GraphStyle::Rounded,
+            false,
+            GraphImageWidthMode::Compact,
+            ImageProtocol::Sixel,
+        );
+        manager.set_viewport_width(64);
+        assert_eq!(manager.display_cell_width(), 64);
+        assert_eq!(manager.pan(true, 1000), Some((191, 254, 254)));
+        assert_eq!(manager.pan(false, 1000), Some((1, 64, 254)));
+        manager.set_viewport_width(300);
+        assert_eq!(manager.display_cell_width(), 254);
+        assert_eq!(manager.pan(true, 1), None);
+    }
 
     #[rstest]
     #[case("default_params_rounded", GraphStyle::Rounded)]

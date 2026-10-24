@@ -210,9 +210,26 @@ fn main() -> Result<()> {
     let ret = loop {
         let repository = git::Repository::load(Path::new("."), order, max_count, mailmap)?;
 
-        let graph = graph::calc_graph(&repository, primary_branch.as_deref());
+        let mut graph = graph::calc_graph(&repository, primary_branch.as_deref());
 
-        let cell_width_type = check::decide_cell_width_type(&graph, graph_width)?;
+        let scroll_graph = matches!(image_protocol, protocol::ImageProtocol::Sixel);
+        let cell_width_type = check::decide_cell_width_type(&graph, graph_width, scroll_graph)?;
+        if scroll_graph
+            && (graph.max_pos_x + 1)
+                * match cell_width_type {
+                    graph::CellWidthType::Double => 2,
+                    graph::CellWidthType::Single => 1,
+                }
+                > usize::from(check::graph_viewport_width(
+                    ratatui::crossterm::terminal::size()?.0,
+                ))
+            && graph.warning.is_none()
+        {
+            graph.warning = Some(
+                "Wide graph: use h/l or Left/Right to pan; selecting a commit follows its node"
+                    .into(),
+            );
+        }
 
         let graph_image_manager = GraphImageManager::new(
             &graph,

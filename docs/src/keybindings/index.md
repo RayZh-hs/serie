@@ -38,6 +38,8 @@ The default key bindings can be overridden.
 | <kbd>c/C</kbd>                       | Copy commit short/full hash                        | `short_copy` `full_copy`                     |
 | <kbd>d</kbd>                         | Toggle custom user command view                    | `user_command_1`                             |
 
+For wide Sixel graphs, use Left/Right or `h`/`l` in the commit list to pan horizontally.
+
 #### Commit Detail
 
 | Key                                  | Description                     | Corresponding keybind           |

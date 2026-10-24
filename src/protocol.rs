@@ -95,15 +95,23 @@ impl ImageProtocol {
         cell_width: usize,
         image_id: u32,
         clear_cell_width: usize,
+        column_offset: usize,
     ) -> PreparedImage {
         let symbol = match self {
             ImageProtocol::Iterm2 => iterm2_encode(bytes, cell_width, 1),
-            ImageProtocol::Sixel => sixel::encode(bytes, cell_width, clear_cell_width)
-                .expect("failed to encode the generated graph row as Sixel"),
+            ImageProtocol::Sixel => {
+                sixel::encode(bytes, cell_width, clear_cell_width, column_offset)
+                    .expect("failed to encode the generated graph row as Sixel")
+            }
             ImageProtocol::Kitty => kitty_encode(bytes, cell_width, 1),
             ImageProtocol::KittyUnicode { tmux } => {
                 return kitty_unicode_prepare(bytes, cell_width, image_id, *tmux);
             }
+        };
+        let cell_width = if matches!(self, ImageProtocol::Sixel) {
+            clear_cell_width
+        } else {
+            cell_width
         };
         let mut cells = Vec::with_capacity(cell_width);
         cells.push(PreparedImageCell {

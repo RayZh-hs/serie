@@ -82,6 +82,16 @@ impl<'a> ListView<'a> {
                         self.as_mut_list_state().select_parent();
                     }
                 }
+                UserEvent::NavigateLeft | UserEvent::NavigateRight => {
+                    if let Some((first, last, total)) = self
+                        .as_mut_list_state()
+                        .pan_graph(matches!(event, UserEvent::NavigateRight), count)
+                    {
+                        self.tx.send(AppEvent::UpdateStatusTransient(format!(
+                            "Graph columns {first}–{last} of {total}"
+                        )));
+                    }
+                }
                 UserEvent::GoToTop => {
                     self.as_mut_list_state().select_first();
                 }
@@ -198,6 +208,7 @@ impl<'a> ListView<'a> {
 
     pub fn update_layout(&mut self, area: Rect) {
         self.as_mut_list_state().update_height(area.height as usize);
+        self.as_mut_list_state().update_graph_viewport(area.width);
     }
 
     pub fn prepare_graph_uploads(&mut self) {

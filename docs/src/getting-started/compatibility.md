@@ -53,6 +53,11 @@ window resizing, and runtime font size changes.
 Sixel does not carry partial alpha transparency. Fully transparent graph
 backgrounds remain transparent, while branch edges use a color palette.
 
+Wide graphs use a horizontal viewport capped at one third of the terminal
+width, leaving the remaining space for commit text. Use `h`/`l` or Left/Right
+in the commit list to pan. The viewport follows the selected commit when the
+selection changes. Resizing the window adjusts the viewport automatically.
+
 ### Partially supported environments
 
 - tmux is supported only when using the kitty Unicode placeholder protocol.

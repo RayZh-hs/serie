@@ -239,7 +239,19 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn graph_area_cell_width(&self) -> u16 {
-        self.graph_cell_width + 1 // right pad
+        self.graph_image_manager
+            .display_cell_width()
+            .min(self.graph_cell_width)
+            + 1
+    }
+
+    pub fn update_graph_viewport(&mut self, width: u16) {
+        self.graph_image_manager
+            .set_viewport_width(crate::check::graph_viewport_width(width));
+    }
+
+    pub fn pan_graph(&mut self, right: bool, count: usize) -> Option<(usize, usize, usize)> {
+        self.graph_image_manager.pan(right, count)
     }
 
     pub fn marked_commit_hash(&self) -> Option<&CommitHash> {
@@ -279,6 +291,10 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn ensure_visible_graph_uploaded(&mut self) {
+        if let Some(commit) = self.commits.get(self.offset + self.selected) {
+            self.graph_image_manager
+                .follow_commit(&commit.commit.commit_hash);
+        }
         self.commits
             .iter()
             .skip(self.offset)
