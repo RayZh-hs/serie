@@ -22,11 +22,19 @@ fn cell_size_from(size: WindowSize) -> io::Result<(u16, u16)> {
     Ok((width, height))
 }
 
-pub(super) fn encode(png: &[u8], columns: usize) -> crate::Result<String> {
-    encode_at_size(png, columns, cell_size()?)
+pub(super) fn encode(png: &[u8], columns: usize, clear_columns: usize) -> crate::Result<String> {
+    encode_at_size(png, columns, clear_columns, cell_size()?)
 }
 
-fn encode_at_size(png: &[u8], columns: usize, cell: (u16, u16)) -> crate::Result<String> {
+fn encode_at_size(
+    png: &[u8],
+    columns: usize,
+    clear_columns: usize,
+    cell: (u16, u16),
+) -> crate::Result<String> {
+    if clear_columns < columns {
+        return Err("Sixel clear width must cover the graph image".into());
+    }
     let width = u32::try_from(columns)?
         .checked_mul(u32::from(cell.0))
         .filter(|width| *width > 0)
@@ -44,9 +52,13 @@ fn encode_at_size(png: &[u8], columns: usize, cell: (u16, u16)) -> crate::Result
             ..Default::default()
         })?;
 
-    // Sixel changes the cursor position. Keep Ratatui's cursor model consistent
-    // with the image's ForcedWidth(1) cell, including images on the bottom row.
-    Ok(format!("\x1b7{sixel}\x1b8\x1b[1C"))
+    // Transparent Sixel pixels leave existing graphics untouched. Erase the
+    // entire graph row before replacing it, including columns outside this
+    // compact image that may contain pixels from a previously wider row.
+    // ECH uses the current background and leaves the cursor in place, preserving
+    // the terminal's transparent background without erasing the commit text.
+    // Restore the cursor after Sixel to match Ratatui's ForcedWidth(1) cell.
+    Ok(format!("\x1b7\x1b[{clear_columns}X{sixel}\x1b8\x1b[1C"))
 }
 
 #[cfg(test)]
@@ -96,11 +108,11 @@ mod tests {
         });
         let mut png = Cursor::new(Vec::new());
         image.write_to(&mut png, image::ImageFormat::Png).unwrap();
-        let encoded = encode_at_size(png.get_ref(), 2, (10, 24)).unwrap();
-        assert!(encoded.starts_with("\x1b7\x1bP"));
+        let encoded = encode_at_size(png.get_ref(), 2, 2, (10, 24)).unwrap();
+        assert!(encoded.starts_with("\x1b7\x1b[2X\x1bP"));
         assert!(encoded.ends_with("\x1b\\\x1b8\x1b[1C"));
         let payload = encoded
-            .strip_prefix("\x1b7")
+            .strip_prefix("\x1b7\x1b[2X")
             .unwrap()
             .strip_suffix("\x1b8\x1b[1C")
             .unwrap();
@@ -114,9 +126,9 @@ mod tests {
         let image = image::RgbaImage::from_pixel(50, 50, image::Rgba([0, 255, 0, 255]));
         let mut png = Cursor::new(Vec::new());
         image.write_to(&mut png, image::ImageFormat::Png).unwrap();
-        let encoded = encode_at_size(png.get_ref(), 2, (16, 35)).unwrap();
+        let encoded = encode_at_size(png.get_ref(), 2, 2, (16, 35)).unwrap();
         let payload = encoded
-            .strip_prefix("\x1b7")
+            .strip_prefix("\x1b7\x1b[2X")
             .unwrap()
             .strip_suffix("\x1b8\x1b[1C")
             .unwrap();
@@ -128,5 +140,25 @@ mod tests {
             .0
             .iter()
             .all(|pixel| pixel[3] == 0));
+    }
+
+    #[test]
+    fn compact_replacement_erases_the_previous_full_graph_footprint() {
+        let image = image::RgbaImage::from_pixel(25, 50, image::Rgba([255, 0, 0, 255]));
+        let mut png = Cursor::new(Vec::new());
+        image.write_to(&mut png, image::ImageFormat::Png).unwrap();
+
+        // A one-lane row can replace a multi-lane row at the same screen
+        // position when scrolling. The clear must cover all eight columns,
+        // even though the compact image occupies only two of them.
+        let encoded = encode_at_size(png.get_ref(), 2, 8, (10, 24)).unwrap();
+        let payload = encoded
+            .strip_prefix("\x1b7\x1b[8X")
+            .expect("the whole previous graph row must be erased before drawing")
+            .strip_suffix("\x1b8\x1b[1C")
+            .unwrap();
+        let decoded: SixelImage = payload.parse().unwrap();
+        assert_eq!(decoded.dimensions(), (20, 24));
+        assert!(encode_at_size(png.get_ref(), 2, 1, (10, 24)).is_err());
     }
 }

@@ -126,8 +126,12 @@ impl<'a> GraphImageManager<'a> {
             self.image_width_mode,
             commit_hash,
         );
-        let mut image =
-            graph_row_image.prepare(self.cell_width_type, self.image_protocol, image_id);
+        let mut image = graph_row_image.prepare(
+            self.cell_width_type,
+            self.image_protocol,
+            image_id,
+            self.graph_cell_width() as usize,
+        );
         if let Some(upload_data) = image.take_upload_data() {
             self.pending_uploads.push(upload_data);
         }
@@ -158,12 +162,13 @@ impl GraphRowImage {
         cell_width_type: CellWidthType,
         image_protocol: ImageProtocol,
         image_id: u32,
+        clear_cell_width: usize,
     ) -> PreparedImage {
         let image_cell_width = match cell_width_type {
             CellWidthType::Double => self.cell_count * 2,
             CellWidthType::Single => self.cell_count,
         };
-        image_protocol.prepare_image(&self.bytes, image_cell_width, image_id)
+        image_protocol.prepare_image(&self.bytes, image_cell_width, image_id, clear_cell_width)
     }
 }
 

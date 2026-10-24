@@ -89,10 +89,16 @@ impl PreparedImage {
 }
 
 impl ImageProtocol {
-    pub fn prepare_image(&self, bytes: &[u8], cell_width: usize, image_id: u32) -> PreparedImage {
+    pub fn prepare_image(
+        &self,
+        bytes: &[u8],
+        cell_width: usize,
+        image_id: u32,
+        clear_cell_width: usize,
+    ) -> PreparedImage {
         let symbol = match self {
             ImageProtocol::Iterm2 => iterm2_encode(bytes, cell_width, 1),
-            ImageProtocol::Sixel => sixel::encode(bytes, cell_width)
+            ImageProtocol::Sixel => sixel::encode(bytes, cell_width, clear_cell_width)
                 .expect("failed to encode the generated graph row as Sixel"),
             ImageProtocol::Kitty => kitty_encode(bytes, cell_width, 1),
             ImageProtocol::KittyUnicode { tmux } => {
